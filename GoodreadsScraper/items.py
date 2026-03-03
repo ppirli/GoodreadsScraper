@@ -162,11 +162,18 @@ class BookLoader(ItemLoader):
     default_output_processor = TakeFirst()
 
 
+def remove_in_prefix(value):
+    if value.startswith('in '):
+        return value[3:]  # Slices off the first 3 characters ("in ")
+    return value
+
 class AuthorItem(scrapy.Item):
     # Scalars
     url = Field()
 
     name = Field()
+
+    birthPlace = Field(input_processor=MapCompose(str.strip, remove_in_prefix))
     birthDate = Field(input_processor=MapCompose(safe_parse_date))
     deathDate = Field(input_processor=MapCompose(safe_parse_date))
 
@@ -175,6 +182,8 @@ class AuthorItem(scrapy.Item):
     reviewsCount = Field(serializer=int)
 
     # Lists
+    books = Field(output_processor=Compose(set, list))
+    bookURLs = Field(output_processor=Compose(set, list)) # NOT a list, but makes sense for it to be here
     genres = Field(output_processor=Compose(set, list))
     influences = Field(output_processor=Compose(set, list))
 

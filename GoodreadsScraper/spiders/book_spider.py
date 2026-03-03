@@ -6,20 +6,30 @@ from .author_spider import AuthorSpider
 from ..items import BookItem, BookLoader
 
 class BookSpider(scrapy.Spider):
-    """Extract information from a /book/show type page on Goodreads
-
-        Technically, this is not a Spider in the sense that
-        it is never initialized by scrapy. Consequently,
-         - its from_crawler method is never invoked
-         - its `crawler` attribute is not set
-         - it does not have a list of start_urls or start_requests
-         - running this spider with scrapy crawl will do nothing
-    """
     name = "book"
 
-    def __init__(self):
-        super().__init__()
-        self.author_spider = AuthorSpider()
+    def __init__(self, book_urls=None, crawl_author="True", *args, **kwargs):
+        """
+        :param book_urls: A comma-separated string or list of book URLs to scrape.
+        :param crawl_author: "True" or "False". If False, stops the spider from
+                             jumping back to the author page (prevents loops).
+        """
+        super().__init__(*args, **kwargs)
+        # 1. Handle the URL input
+        # Scrapy arguments often come as strings, so we handle both formats
+        self.start_urls = []
+        if book_urls:
+            if isinstance(book_urls, str):
+                # If passed from command line as a single string
+                self.start_urls = book_urls.split(',')
+            else:
+                # If passed from python script as a list
+                self.start_urls = book_urls
+
+        # 2. Setup Author Spider logic
+        self.should_crawl_author = str(crawl_author).lower() in ['true', '1', 'yes']
+        if self.should_crawl_author:
+            self.author_spider = AuthorSpider()
 
     def parse(self, response, loader=None):
         if not loader:
@@ -56,5 +66,7 @@ class BookSpider(scrapy.Spider):
 
         yield loader.load_item()
 
-        author_url = response.css('a.ContributorLink::attr(href)').extract_first()
-        yield response.follow(author_url, callback=self.author_spider.parse)
+        if self.should_crawl_author:
+            author_url = response.css('a.ContributorLink::attr(href)').extract_first()
+            if author_url:
+                yield response.follow(author_url, callback=self.author_spider.parse)

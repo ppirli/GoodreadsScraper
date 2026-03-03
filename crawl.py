@@ -1,3 +1,4 @@
+import shutil, time, threading, os, glob, json
 import click
 from rich.progress import Progress, TaskID, Console, track
 from rich.live import Live
@@ -160,6 +161,34 @@ def my_books(ctx, user_id: str, shelf: str, output_file_suffix: str):
             shelf=shelf,
             item_scraped_callback=progress_updater)
 
+def backup_scheduler(job_directory):
+    """
+    Creates a backup every 10 mins.
+    Ensures ONLY the 3 most recent backups exist.
+    """
+    while True:
+        time.sleep(600) # Wait 10 minutes
+
+        timestamp = int(time.time())
+        backup_path = f"{job_directory}_backup_{timestamp}"
+
+        try:
+            if os.path.exists(job_directory):
+                # 1. Create the new backup
+                shutil.copytree(job_directory, backup_path)
+
+                # 2. Enforce the limit: Delete oldest if we have > 3
+                # Get all backup folders and sort them (Oldest -> Newest)
+                all_backups = sorted(glob.glob(f"{job_directory}_backup_*"))
+
+                # Delete until only 3 remain
+                while len(all_backups) > 3:
+                    oldest_backup = all_backups.pop(0) # Get the first (oldest) item
+                    shutil.rmtree(oldest_backup)       # Delete it from disk
+
+        except Exception as e:
+            # If files are locked, just try again next cycle
+            pass
 
 def _crawl(spider_name, log_file, output_file_suffix, **crawl_kwargs):
     settings = get_project_settings()
@@ -167,8 +196,25 @@ def _crawl(spider_name, log_file, output_file_suffix, **crawl_kwargs):
     # used by the JsonLineItem pipeline
     settings.set("OUTPUT_FILE_SUFFIX", output_file_suffix)
 
-    # Emit all scrapy logs to log_file instead of stderr
-    settings.set("LOG_FILE", log_file)
+    # do not flood with messages
+    settings.set("LOG_LEVEL", "DEBUG")
+
+    # Creates a unique folder for this specific crawl's state
+    job_directory = f"crawls/{spider_name}_{output_file_suffix}"
+    settings.set("JOBDIR", job_directory)
+
+    #settings.set("HTTPCACHE_ENABLED", True)
+    #settings.set("HTTPCACHE_EXPIRATION_SECS", 0) # Never expire
+    #settings.set("HTTPCACHE_DIR", 'httpcache')
+
+    # --- START BACKUP LOGIC ---
+    backup_thread = threading.Thread(
+        target=backup_scheduler,
+        args=(job_directory,),
+        daemon=True
+    )
+    backup_thread.start()
+    # --- END BACKUP LOGIC ---
 
     process = CrawlerProcess(settings)
 
@@ -176,7 +222,6 @@ def _crawl(spider_name, log_file, output_file_suffix, **crawl_kwargs):
 
     # CLI will block until this call completes
     process.start()
-
 
 class ProgressUpdater():
     """Callback class for updating the progress on the console.
@@ -210,6 +255,60 @@ class ProgressUpdater():
         if task is not None:
             self.progress.advance(task)
 
+
+@crawl.command()
+@click.option("--author_file", required=True, help="Path to the author .jl file")
+@click.option("--output_suffix", default="books_batch", help="Suffix for output file")
+@click.pass_context
+def crawl_books(ctx, author_file, output_suffix):
+    """Scrapes books found in an existing author file."""
+
+    # 1. Extract URLs from the author file
+    book_urls = set()
+    click.echo(f"Reading {author_file}...")
+
+    try:
+        with open(author_file, 'r') as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    # Use the new field 'book_urls' we created earlier
+                    if 'bookURLs' in data:
+                        for url in data['bookURLs']:
+
+                          # 1. SKIP non-book links (like /series/ or /genres/)
+                            if "/book/show" not in url:
+                                continue
+
+                          # 2. Fix relative URLs
+                            if not url.startswith('http'):
+                                url = "https://www.goodreads.com" + url
+                            book_urls.add(url)
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        click.echo(f"Error: File {author_file} not found.")
+        return
+
+    if not book_urls:
+        click.echo("No book URLs found. Did you update AuthorSpider to save 'book_urls'?")
+        return
+
+    click.echo(f"Found {len(book_urls)} unique books. Starting scrape...")
+
+    # 2. Run the BookSpider with these URLs
+    # We pass crawl_author=False to prevent infinite loops
+    progress_updater = ProgressUpdater(infinite=True)
+
+    with progress_updater.progress:
+        progress_updater.add_task_for(BookItem, description="Scraping books...")
+
+        _crawl('book',
+               ctx.obj["LOG_FILE"],
+               output_suffix,
+               book_urls=list(book_urls), # Passes the list to __init__
+               crawl_author="False",      # IMPORTANT: Disable author recursion
+               item_scraped_callback=progress_updater)
 
 if __name__ == "__main__":
     crawl()

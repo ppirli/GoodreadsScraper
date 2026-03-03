@@ -59,7 +59,7 @@ class AuthorSpider(scrapy.Spider):
         loader = AuthorLoader(AuthorItem(), response=response)
         loader.add_value('url', response.request.url)
         loader.add_css("name", 'h1.authorName>span[itemprop="name"]::text')
-
+        loader.add_xpath("birthPlace", '//div[@class="dataTitle"][text()="Born"]/following-sibling::text()[1]') # new
         loader.add_css("birthDate", 'div.dataItem[itemprop="birthDate"]::text')
         loader.add_css("deathDate", 'div.dataItem[itemprop="deathDate"]::text')
 
@@ -67,6 +67,9 @@ class AuthorSpider(scrapy.Spider):
         loader.add_css("influences", 'div.dataItem>span>a[href*="/author/show"]::text')
 
         loader.add_css("avgRating", 'span.average[itemprop="ratingValue"]::text')
+        loader.add_css("books", 'a.bookTitle span[itemprop="name"]::text')
+        loader.add_css("bookURLs", 'a.bookTitle::attr(href)')
+
         loader.add_css("reviewsCount", 'span[itemprop="reviewCount"]::attr(content)')
         loader.add_css("ratingsCount", 'span[itemprop="ratingCount"]::attr(content)')
 
